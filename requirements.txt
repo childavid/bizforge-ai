@@ -1,0 +1,6 @@
+streamlit
+reportlab
+flask
+requests
+python-dotenv
+gunicorn

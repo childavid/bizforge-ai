@@ -1,0 +1,28 @@
+import requests
+from config import FLW_SECRET_KEY
+
+BASE_URL = "https://api.flutterwave.com/v3"
+
+
+def create_payment(email, amount, currency="NGN"):
+    headers = {
+        "Authorization": f"Bearer {FLW_SECRET_KEY}"
+    }
+
+    data = {
+        "tx_ref": email + "_sub",
+        "amount": amount,
+        "currency": currency,
+        "redirect_url": "https://your-app.com/success",
+        "customer": {
+            "email": email
+        }
+    }
+
+    response = requests.post(
+        f"{BASE_URL}/payments",
+        json=data,
+        headers=headers
+    )
+
+    return response.json()

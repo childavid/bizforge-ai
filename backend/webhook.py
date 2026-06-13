@@ -32,6 +32,7 @@ app = Flask(__name__)
 @app.route("/flutterwave-webhook", methods=["POST"])
 def flutterwave_webhook():
     try:
+        print("Webhook received")
         logger.info("Webhook received")
         # Verify webhook signature
         received_hash = request.headers.get("verif-hash")
@@ -91,11 +92,14 @@ def flutterwave_webhook():
 
         if verify_response.status_code == 200 and verify_data.get("status") == "success":
             transaction_status = verify_data["data"]["status"]
+            print("Payment status:", transaction_status)
             logger.info(f"Transaction status: {transaction_status}")
 
             # Extract email from customer data
             customer_data = verify_data.get("data", {}).get("customer", {})
             email = customer_data.get("email")
+
+            print("Customer email:", email)
 
             if not email:
                 logger.warning("No email found in transaction data")

@@ -1,11 +1,12 @@
+import os
 import sqlite3
 from datetime import datetime, date
 import re
 
-print("DB FILE:", __file__)
-
-DB = "saas.db"
+DB = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "saas.db"))
 FREE_DAILY_LIMIT = 5
+
+print("DATABASE FILE:", DB)
 
 
 # ================= VALIDATION =================
@@ -49,6 +50,7 @@ def sanitize_input(text):
 
 
 def connect():
+    print("CONNECTING TO:", DB)
     return sqlite3.connect(DB)
 
 
@@ -141,6 +143,11 @@ def init_db():
     """)
 
     conn.commit()
+    
+    # Print tables for debugging
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    print("TABLES FOUND:", cur.fetchall())
+    
     conn.close()
 
 
@@ -166,6 +173,9 @@ def create_user(email):
 def get_plan(email):
     conn = connect()
     cur = conn.cursor()
+
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    print("TABLES AVAILABLE:", cur.fetchall())
 
     cur.execute("SELECT plan FROM users WHERE email=?", (email,))
     row = cur.fetchone()
@@ -517,3 +527,7 @@ def get_history(email, feature_type=None):
     rows = cur.fetchall()
     conn.close()
     return rows
+
+
+# Initialize database tables on import
+init_db()

@@ -1,9 +1,13 @@
 from flask import Flask, request
 import sqlite3
+import os
 
 app = Flask(__name__)
 
-DB = "saas.db"
+# Use same database path as database/db.py
+DB = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "saas.db"))
+
+print("WEBHOOK DB PATH:", DB)
 
 
 def connect():

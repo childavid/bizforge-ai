@@ -28,7 +28,7 @@ from database.db import (
 
 from datetime import datetime
 
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:5001")
+BACKEND_URL = "https://chil.pythonanywhere.com"
 
 # ================= INIT =================
 st.set_page_config(page_title="BizForge AI", layout="wide")
@@ -69,8 +69,23 @@ def login():
             # STEP 5: create user in DB
             create_user(email)
 
-            # STEP 5: load plan from DB (IMPORTANT FIX)
-            st.session_state.plan = get_plan(email)
+            # STEP 5: load plan from backend API
+            try:
+                response = requests.get(f"{BACKEND_URL}/plan/{email}", timeout=10)
+                response.raise_for_status()
+                st.session_state.plan = response.json()["plan"]
+            except requests.exceptions.Timeout:
+                st.error("Backend request timed out. Defaulting to free plan.")
+                st.session_state.plan = "free"
+            except requests.exceptions.ConnectionError:
+                st.error("Failed to connect to backend. Defaulting to free plan.")
+                st.session_state.plan = "free"
+            except requests.exceptions.RequestException as e:
+                st.error(f"Failed to fetch plan from backend: {e}. Defaulting to free plan.")
+                st.session_state.plan = "free"
+            except Exception as e:
+                st.error(f"Unexpected error: {e}. Defaulting to free plan.")
+                st.session_state.plan = "free"
 
             st.success("✅ Login successful — welcome to BizForge AI")
             st.rerun()
@@ -618,11 +633,22 @@ elif tool == "Settings":
                         json={
                             "email": email,
                             "tx_ref": tx_ref
-                        }
+                        },
+                        timeout=10
                     )
+                    response.raise_for_status()
                     pay = response.json()
-                except Exception as e:
+                except requests.exceptions.Timeout:
+                    st.error("Backend request timed out. Please try again.")
+                    st.stop()
+                except requests.exceptions.ConnectionError:
+                    st.error("Failed to connect to backend. Please check your internet connection.")
+                    st.stop()
+                except requests.exceptions.RequestException as e:
                     st.error(f"Failed to connect to backend: {e}")
+                    st.stop()
+                except Exception as e:
+                    st.error(f"Unexpected error: {e}")
                     st.stop()
 
                 if pay.get("status") == "success":
@@ -635,8 +661,19 @@ elif tool == "Settings":
                     st.info("After payment, your account will upgrade automatically. Click the button below to refresh your plan status.")
 
                     if st.button("🔄 Refresh Plan Status"):
-                        st.session_state.plan = get_plan(email)
-                        st.rerun()
+                        try:
+                            response = requests.get(f"{BACKEND_URL}/plan/{email}", timeout=10)
+                            response.raise_for_status()
+                            st.session_state.plan = response.json()["plan"]
+                            st.rerun()
+                        except requests.exceptions.Timeout:
+                            st.error("Backend request timed out. Please try again.")
+                        except requests.exceptions.ConnectionError:
+                            st.error("Failed to connect to backend. Please check your internet connection.")
+                        except requests.exceptions.RequestException as e:
+                            st.error(f"Failed to refresh plan: {e}")
+                        except Exception as e:
+                            st.error(f"Unexpected error: {e}")
 
                 else:
                     st.error(f"Payment failed: {pay.get('message', 'Unknown error')}")

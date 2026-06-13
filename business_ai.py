@@ -189,8 +189,7 @@ if tool == "Dashboard":
         col_upgrade = st.columns(1)[0]
         with col_upgrade:
             if st.button("🚀 Upgrade to PRO", key="dashboard_upgrade", use_container_width=True):
-                st.session_state.plan = "pro"
-                st.rerun()
+                st.info("👉 Go to Settings to upgrade your plan")
         st.divider()
     
     st.divider()
@@ -305,9 +304,7 @@ elif tool == "Invoice Generator":
     if not can_use:
         st.error(f"❌ Daily limit reached! You've used your {FREE_DAILY_LIMIT} free invoice generations for today.")
         st.info("🚀 Upgrade to PRO for unlimited access")
-        if st.button("Upgrade to PRO"):
-            st.session_state.plan = "pro"
-            st.rerun()
+        st.info("👉 Go to Settings to upgrade your plan")
         st.stop()
 
     client = st.text_input("Client")
@@ -362,9 +359,7 @@ elif tool == "Proposal Generator":
     if not can_use:
         st.error(f"❌ Daily limit reached! You've used your {FREE_DAILY_LIMIT} free proposal generations for today.")
         st.info("🚀 Upgrade to PRO for unlimited access")
-        if st.button("Upgrade to PRO"):
-            st.session_state.plan = "pro"
-            st.rerun()
+        st.info("👉 Go to Settings to upgrade your plan")
         st.stop()
 
     client = st.text_input("Client")
@@ -414,9 +409,7 @@ elif tool == "Email Writer":
     if not can_use:
         st.error(f"❌ Daily limit reached! You've used your {FREE_DAILY_LIMIT} free email generations for today.")
         st.info("🚀 Upgrade to PRO for unlimited access")
-        if st.button("Upgrade to PRO"):
-            st.session_state.plan = "pro"
-            st.rerun()
+        st.info("👉 Go to Settings to upgrade your plan")
         st.stop()
 
     recipient = st.text_input("Recipient Name")
@@ -466,9 +459,7 @@ elif tool == "Social Media Posts":
     if not can_use:
         st.error(f"❌ Daily limit reached! You've used your {FREE_DAILY_LIMIT} free social media post generations for today.")
         st.info("🚀 Upgrade to PRO for unlimited access")
-        if st.button("Upgrade to PRO"):
-            st.session_state.plan = "pro"
-            st.rerun()
+        st.info("👉 Go to Settings to upgrade your plan")
         st.stop()
 
     topic = st.text_area("Post Topic/Theme", help="Describe what you want to post about (e.g., product launch, tip, promotion)")
@@ -509,9 +500,7 @@ elif tool == "Business Ideas":
     if not can_use:
         st.error(f"❌ Daily limit reached! You've used your {FREE_DAILY_LIMIT} free business idea generations for today.")
         st.info("🚀 Upgrade to PRO for unlimited access")
-        if st.button("Upgrade to PRO"):
-            st.session_state.plan = "pro"
-            st.rerun()
+        st.info("👉 Go to Settings to upgrade your plan")
         st.stop()
 
     interest = st.text_area("Industry/Interest", help="What industry or area are you interested in? (e.g., tech, ecommerce, education)")

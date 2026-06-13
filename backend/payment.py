@@ -14,6 +14,9 @@ FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY")
 FLW_PUBLIC_KEY = os.getenv("FLW_PUBLIC_KEY")
 BACKEND_URL = os.getenv("BACKEND_URL")
 
+print("FLW_SECRET_KEY loaded:", bool(FLW_SECRET_KEY))
+print("BACKEND_URL:", BACKEND_URL)
+
 app = Flask(__name__)
 
 
@@ -21,8 +24,11 @@ app = Flask(__name__)
 def create_payment():
     try:
         data = request.json
+        print("Request JSON:", data)
         email = data.get("email")
         tx_ref = data.get("tx_ref")
+        print("Email:", email)
+        print("tx_ref:", tx_ref)
 
         if not email:
             return jsonify({"error": "email is required"}), 400
@@ -56,6 +62,7 @@ def create_payment():
 
         response = requests.post(url, json=payload, headers=headers)
         res = response.json()
+        print("Flutterwave response:", res)
 
         if response.status_code == 200 and res.get("status") == "success":
             return jsonify({
@@ -63,9 +70,11 @@ def create_payment():
                 "data": res.get("data")
             }), 200
         else:
+            error_message = res.get("message", "Payment request failed")
+            print("Flutterwave error message:", error_message)
             return jsonify({
                 "status": "error",
-                "message": res.get("message", "Payment request failed")
+                "message": error_message
             }), 400
 
     except Exception as e:

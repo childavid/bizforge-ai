@@ -1,66 +1,77 @@
-import streamlit as st
-from datetime import datetime
+"""Download helpers for records created in BizForge."""
+
 import csv
 import io
+import re
+from datetime import datetime
+from html import escape
+
+import streamlit as st
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import cm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+
+
+def _safe_filename(filename):
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", filename).strip("._")
+    return safe or "bizforge_export"
 
 
 def copy_to_clipboard(text):
-    """Copy text to clipboard"""
+    """Show selectable text; browser clipboard access is not reliable from Streamlit."""
     st.code(text, language=None)
-    st.button("📋 Copy to Clipboard", on_click=lambda: st.session_state.update(copied_text=text))
 
 
 def export_to_csv(content, filename="export"):
-    """Export content to CSV"""
     csv_file = io.StringIO()
     writer = csv.writer(csv_file)
     writer.writerow(["Content"])
     writer.writerow([content])
-    
-    csv_bytes = csv_file.getvalue().encode('utf-8')
     st.download_button(
-        label="📥 Download as CSV",
-        data=csv_bytes,
-        file_name=f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv"
+        label="Download CSV",
+        data=csv_file.getvalue().encode("utf-8"),
+        file_name=f"{_safe_filename(filename)}_{datetime.now():%Y%m%d_%H%M%S}.csv",
+        mime="text/csv",
     )
 
 
-def export_to_pdf(content, title="Document", filename="export"):
-    """Export content to PDF (simplified as text download for now)"""
-    # For a true PDF, we'd need reportlab or similar
-    # For now, we'll export as a formatted text file that can be printed to PDF
-    pdf_content = f"""
-{title}
-{'=' * len(title)}
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+def build_pdf(content, title="Document"):
+    """Create a real PDF in memory without writing a temporary customer file."""
+    buffer = io.BytesIO()
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.8 * cm,
+        leftMargin=1.8 * cm,
+        topMargin=1.8 * cm,
+        bottomMargin=1.8 * cm,
+        title=title,
+    )
+    styles = getSampleStyleSheet()
+    story = [Paragraph(escape(title), styles["Title"]), Spacer(1, 0.35 * cm)]
+    for line in content.splitlines():
+        story.append(Paragraph(escape(line) or "&nbsp;", styles["BodyText"]))
+        story.append(Spacer(1, 0.08 * cm))
+    document.build(story)
+    return buffer.getvalue()
 
-{content}
-"""
-    
+
+def export_to_pdf(content, title="Document", filename="export"):
     st.download_button(
-        label="📥 Download as PDF (Text)",
-        data=pdf_content,
-        file_name=f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-        mime="text/plain"
+        label="Download PDF",
+        data=build_pdf(content, title),
+        file_name=f"{_safe_filename(filename)}_{datetime.now():%Y%m%d_%H%M%S}.pdf",
+        mime="application/pdf",
     )
 
 
 def export_section(content, title="Document", filename="export"):
-    """Display export buttons for a content section"""
-    st.markdown("### 📤 Export Options")
-    
+    st.markdown("### Export")
     col1, col2, col3 = st.columns(3)
-    
     with col1:
-        if st.button("📋 Copy to Clipboard", key=f"copy_{filename}"):
-            st.session_state[f"copied_{filename}"] = content
-            st.success("✅ Copied to clipboard!")
-    
+        copy_to_clipboard(content)
     with col2:
         export_to_csv(content, filename)
-    
     with col3:
         export_to_pdf(content, title, filename)
-    
-    st.divider()

@@ -1,82 +1,25 @@
+"""Legacy-compatible helpers that now return real PDF bytes."""
+
 from utils.currency import format_currency
-
-# ---------------- SAFE CONVERTER ----------------
-def safe_float(x):
-    try:
-        return float(x)
-    except:
-        return 0.0
+from utils.export_utils import build_pdf
 
 
-# ================= INVOICE PDF =================
-def generate_invoice_pdf(
-    client,
-    service,
-    description,
-    quantity,
-    rate,
-    subtotal,
-    tax_amount,
-    total,
-    currency
-):
-    quantity = safe_float(quantity)
-    rate = safe_float(rate)
-    subtotal = safe_float(subtotal)
-    tax_amount = safe_float(tax_amount)
-    total = safe_float(total)
-
-    content = f"""
-================ INVOICE ================
-
-Client: {client}
-Service: {service}
-Description: {description}
-
-----------------------------------------
-Quantity: {quantity}
-Rate: {format_currency(rate, currency)}
-
-----------------------------------------
-Subtotal: {format_currency(subtotal, currency)}
-Tax: {format_currency(tax_amount, currency)}
-Total: {format_currency(total, currency)}
-
-========================================
-"""
-
-    return content.encode("utf-8")
+def generate_invoice_pdf(client, service, description, quantity, rate, subtotal, tax_amount, total, currency):
+    content = (
+        "INVOICE\n\n"
+        f"Client: {client}\nService: {service}\nDescription: {description}\n\n"
+        f"Quantity: {float(quantity):g}\nRate: {format_currency(rate, currency)}\n\n"
+        f"Subtotal: {format_currency(subtotal, currency)}\n"
+        f"Tax: {format_currency(tax_amount, currency)}\n"
+        f"Total: {format_currency(total, currency)}"
+    )
+    return build_pdf(content, "Invoice")
 
 
-# ================= PROPOSAL PDF =================
-def generate_proposal_pdf(
-    client,
-    project,
-    scope,
-    timeline,
-    budget,
-    tone,
-    currency
-):
-    budget = safe_float(budget)
-
-    content = f"""
-============= PROPOSAL =============
-
-Client: {client}
-Project: {project}
-
-------------------------------------
-Scope:
-{scope}
-
-Timeline: {timeline}
-Tone: {tone}
-
-------------------------------------
-Budget: {format_currency(budget, currency)}
-
-====================================
-"""
-
-    return content.encode("utf-8")
+def generate_proposal_pdf(client, project, scope, timeline, budget, tone, currency):
+    content = (
+        "PROPOSAL\n\n"
+        f"Client: {client}\nProject: {project}\n\nScope:\n{scope}\n\n"
+        f"Timeline: {timeline}\nTone: {tone}\nBudget: {format_currency(budget, currency)}"
+    )
+    return build_pdf(content, "Proposal")

@@ -1,56 +1,18 @@
-# =========================
-# 🧠 BUSINESS AI CONFIG
-# =========================
+"""Non-secret application settings.
 
-# MODE (important for payments later)
-# DEV = testing (fake payments allowed)
-# LIVE = real money mode (Flutterwave)
-MODE = "DEV"
+Put live credentials in environment variables or a private .env file, never in
+this source file.
+"""
 
+import os
 
-# =========================
-# 💰 SUBSCRIPTION SETTINGS
-# =========================
-
-FREE_LIMIT = 3  # number of invoices/proposals free users can create
-
-PRO_PRICE_NGN = 5000
+MODE = os.getenv("BIZFORGE_MODE", "DEV")
+FREE_LIMIT = 5
+PRO_PRICE_NGN = int(os.getenv("PRO_PRICE_NGN", "5000"))
 PRO_PRICE_USD = 5
-
-
-# =========================
-# 💱 CURRENCY SETTINGS
-# =========================
-
 DEFAULT_CURRENCY = "NGN"
-
 SUPPORTED_CURRENCIES = ["NGN", "USD"]
-
-
-# =========================
-# 🔐 APP SETTINGS
-# =========================
-
-APP_NAME = "BizPilot SaaS"
-
+APP_NAME = "BizForge"
 ALLOW_SIGNUP = True
-
-
-# =========================
-# 💳 FLUTTERWAVE (PLACEHOLDERS)
-# =========================
-
-FLW_PUBLIC_KEY = "YOUR_PUBLIC_KEY"
-FLW_SECRET_KEY = "YOUR_SECRET_KEY"
-
-
-# =========================
-# 📧 EMAIL SETTINGS (future use)
-# =========================
-
-SEND_EMAIL_RECEIPTS = False
-
-PRO_PRICE_NGN = 5000
-PRO_PRICE_USD = 5
-
-FLW_SECRET_KEY = "YOUR_FLUTTERWAVE_SECRET"
+FLW_PUBLIC_KEY = os.getenv("FLW_PUBLIC_KEY", "")
+FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY", "")

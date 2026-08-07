@@ -1,95 +1,136 @@
+"""Server-side checkout endpoints for BizForge.
+
+This module never exposes payment secrets to the Streamlit app.  It records a
+pending checkout first, then the webhook verifies the same reference before a
+customer receives a Pro plan.
+"""
+
+import logging
 import os
 import sys
-import requests
-from flask import Flask, request, jsonify
-from dotenv import load_dotenv
+import uuid
 
-# Add parent directory to path for imports
+import requests
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from database.db import get_plan
+from database.db import (  # noqa: E402
+    create_pending_payment,
+    get_plan,
+    init_db,
+    normalise_email,
+)
+
 
 load_dotenv()
-
-FLW_SECRET_KEY = os.getenv("FLW_SECRET_KEY")
-FLW_PUBLIC_KEY = os.getenv("FLW_PUBLIC_KEY")
-BACKEND_URL = os.getenv("BACKEND_URL")
-
-print("FLW_SECRET_KEY loaded:", bool(FLW_SECRET_KEY))
-print("BACKEND_URL:", BACKEND_URL)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+init_db()
 
 
-@app.route("/pay", methods=["POST"])
-def create_payment():
+def _payments_enabled():
+    return os.getenv("PAYMENTS_ENABLED", "false").strip().lower() == "true"
+
+
+def _pro_price_ngn():
     try:
-        data = request.json
-        print("Request JSON:", data)
-        email = data.get("email")
-        tx_ref = data.get("tx_ref")
-        print("Email:", email)
-        print("tx_ref:", tx_ref)
+        price = int(os.getenv("PRO_PRICE_NGN", "5000"))
+    except ValueError as exc:
+        raise ValueError("PRO_PRICE_NGN must be a whole number") from exc
+    if price <= 0:
+        raise ValueError("PRO_PRICE_NGN must be greater than zero")
+    return price
 
-        if not email:
-            return jsonify({"error": "email is required"}), 400
 
-        # FIXED PRICE: Enforce 100 NGN for PRO upgrade
-        # Ignore any amount/currency sent from frontend for security
-        FIXED_AMOUNT = 100
-        FIXED_CURRENCY = "NGN"
+@app.get("/")
+def home():
+    return jsonify({"service": "BizForge API", "status": "running"})
 
-        url = "https://api.flutterwave.com/v3/payments"
 
-        headers = {
-            "Authorization": f"Bearer {FLW_SECRET_KEY}",
-            "Content-Type": "application/json"
-        }
+@app.get("/health")
+def health():
+    return jsonify({"status": "ok", "payments_enabled": _payments_enabled()})
 
+
+@app.post("/pay")
+def create_payment():
+    if not _payments_enabled():
+        return jsonify({"status": "error", "message": "Payments are not enabled yet."}), 503
+
+    data = request.get_json(silent=True) or {}
+    try:
+        email = normalise_email(data.get("email", ""))
+        amount = _pro_price_ngn()
+    except ValueError as exc:
+        return jsonify({"status": "error", "message": str(exc)}), 400
+
+    secret_key = os.getenv("FLW_SECRET_KEY")
+    backend_url = os.getenv("BACKEND_URL", "").rstrip("/")
+    if not secret_key or not backend_url:
+        logger.error("Checkout configuration is incomplete")
+        return jsonify({"status": "error", "message": "Checkout is not configured."}), 503
+
+    tx_ref = f"bizforge-{uuid.uuid4().hex}"
+    try:
+        create_pending_payment(email, tx_ref, amount, "NGN", "pro")
         payload = {
             "tx_ref": tx_ref,
-            "amount": FIXED_AMOUNT,
-            "currency": FIXED_CURRENCY,
-            "redirect_url": BACKEND_URL,  # Redirect back to Streamlit after payment
-            "customer": {
-                "email": email
-            },
-            "payment_options": "card",
+            "amount": amount,
+            "currency": "NGN",
+            "redirect_url": f"{backend_url}/payment-return?tx_ref={tx_ref}",
+            "customer": {"email": email},
+            "payment_options": "card,banktransfer,ussd,opay",
             "customizations": {
-                "title": "BizPilot SaaS Upgrade",
-                "description": "Upgrade to PRO plan"
-            }
+                "title": "BizForge Pro",
+                "description": "BizForge Pro subscription",
+            },
         }
+        response = requests.post(
+            "https://api.flutterwave.com/v3/payments",
+            json=payload,
+            headers={"Authorization": f"Bearer {secret_key}", "Content-Type": "application/json"},
+            timeout=20,
+        )
+        response_data = response.json()
+    except requests.exceptions.RequestException:
+        logger.exception("Could not create checkout session")
+        return jsonify({"status": "error", "message": "Could not reach the payment provider."}), 503
+    except ValueError:
+        logger.exception("Payment provider returned invalid JSON")
+        return jsonify({"status": "error", "message": "Payment provider returned an invalid response."}), 502
+    except Exception:
+        logger.exception("Could not prepare checkout")
+        return jsonify({"status": "error", "message": "Could not prepare checkout."}), 500
 
-        response = requests.post(url, json=payload, headers=headers)
-        res = response.json()
-        print("Flutterwave response:", res)
+    link = response_data.get("data", {}).get("link") if isinstance(response_data, dict) else None
+    if response.ok and response_data.get("status") == "success" and link:
+        return jsonify({"status": "success", "link": link, "tx_ref": tx_ref}), 200
 
-        if response.status_code == 200 and res.get("status") == "success":
-            return jsonify({
-                "status": "success",
-                "data": res.get("data")
-            }), 200
-        else:
-            error_message = res.get("message", "Payment request failed")
-            print("Flutterwave error message:", error_message)
-            return jsonify({
-                "status": "error",
-                "message": error_message
-            }), 400
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    logger.warning("Payment provider rejected checkout request: status=%s", response.status_code)
+    return jsonify({"status": "error", "message": "Could not create a payment link. Please try again."}), 502
 
 
-@app.route("/plan/<email>", methods=["GET"])
+@app.get("/payment-return")
+def payment_return():
+    """A neutral return page; access is granted only by verified webhook data."""
+    return (
+        "Payment received. BizForge will confirm your payment shortly. "
+        "You can return to the app and refresh your plan status.",
+        200,
+        {"Content-Type": "text/plain; charset=utf-8"},
+    )
+
+
+@app.get("/plan/<email>")
 def get_user_plan(email):
     try:
-        plan = get_plan(email)
-        return jsonify({"email": email, "plan": plan}), 200
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"email": normalise_email(email), "plan": get_plan(email)}), 200
+    except ValueError:
+        return jsonify({"error": "Invalid email address"}), 400
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5001))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5001")), debug=False)

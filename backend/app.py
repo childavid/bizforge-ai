@@ -1,5 +1,6 @@
-from flask import Flask
+"""Production WSGI entry point for BizForge."""
 
-from backend.payment import app as payment_app
+from backend.payment import app
+from backend.webhook import register_webhook
 
-app = payment_app
+register_webhook(app)

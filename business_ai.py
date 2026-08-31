@@ -246,7 +246,12 @@ apply_futuristic_theme()
 
 
 def init_state():
-    defaults = {"logged_in": False, "email": "", "plan": "free", "pending_payment": None}
+    defaults = {
+        "logged_in": False,
+        "email": "",
+        "plan": "free",
+        "pending_payment": None,
+    }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
 
@@ -265,11 +270,48 @@ def load_plan(email):
 
 
 def sign_out():
-    st.session_state.logged_in = False
-    st.session_state.email = ""
-    st.session_state.plan = "free"
-    st.session_state.pending_payment = None
+    st.session_state.clear()
     st.rerun()
+
+
+def _account_api(path, payload):
+    """Use the persistent backend for accounts when the app is deployed."""
+    if not BACKEND_URL:
+        return None, None
+    try:
+        response = requests.post(f"{BACKEND_URL}{path}", json=payload, timeout=8)
+        body = response.json()
+        return response.status_code, body if isinstance(body, dict) else {}
+    except (requests.RequestException, ValueError):
+        return None, None
+
+
+def log_in_account(email, password):
+    status, body = _account_api("/api/accounts/login", {"email": email, "password": password})
+    if status is not None:
+        return status == 200, (body or {}).get("message", "Incorrect email or password."), body or {}
+    if BACKEND_URL:
+        return False, "Account service is temporarily unavailable. Please try again shortly.", {}
+    if authenticate_user(email, password):
+        return True, "", {"email": email.strip().lower(), "plan": get_plan(email)}
+    return False, "Incorrect email or password.", {}
+
+
+def register_account(email, password, business_name):
+    payload = {"email": email, "password": password, "business_name": business_name}
+    status, body = _account_api("/api/accounts/register", payload)
+    if status is not None:
+        return status == 201, (body or {}).get("message", "Could not create account.")
+    if BACKEND_URL:
+        return False, "Account service is temporarily unavailable. Please try again shortly."
+    try:
+        created = create_user(email, password, business_name)
+    except ValueError as exc:
+        return False, str(exc)
+    if not created:
+        return False, "An account already uses this email. Please log in instead."
+    notify_new_signup(email.strip().lower(), business_name)
+    return True, ""
 
 
 def account_screen():
@@ -283,12 +325,14 @@ def account_screen():
             password = st.text_input("Password", type="password", key="login_password")
             submitted = st.form_submit_button("Log in", use_container_width=True)
         if submitted:
-            if authenticate_user(email, password):
+            authenticated, message, account = log_in_account(email, password)
+            if authenticated:
                 st.session_state.logged_in = True
-                st.session_state.email = email.strip().lower()
-                st.session_state.plan = load_plan(st.session_state.email)
+                st.session_state.email = account.get("email", email.strip().lower())
+                st.session_state.plan = account.get("plan") or load_plan(st.session_state.email)
                 st.rerun()
-            st.error("Incorrect email or password.")
+            else:
+                st.error(message)
 
     with create_tab:
         with st.form("create_account_form"):
@@ -301,15 +345,11 @@ def account_screen():
             if password != confirmation:
                 st.error("Passwords do not match.")
             else:
-                try:
-                    created = create_user(email, password, business_name)
-                    if not created:
-                        st.error("An account already uses this email. Please log in instead.")
-                    else:
-                        notify_new_signup(email.strip().lower(), business_name)
-                        st.success("Account created. You can log in now.")
-                except ValueError as exc:
-                    st.error(str(exc))
+                created, message = register_account(email, password, business_name)
+                if created:
+                    st.success("Account created. You can log in now.")
+                else:
+                    st.error(message)
 
 
 def feature_allowed(feature):

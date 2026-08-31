@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import uuid
+import hmac
 
 import requests
 from dotenv import load_dotenv
@@ -16,7 +17,11 @@ from flask import Flask, jsonify, render_template_string, request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.db import (  # noqa: E402
+    authenticate_user,
+    create_user,
     create_pending_payment,
+    delete_all_account_data,
+    get_account,
     get_plan,
     init_db,
     normalise_email,
@@ -26,6 +31,7 @@ from utils.ai_assist import (  # noqa: E402
     generate_email_assist,
     generate_social_post_assist,
 )
+from utils.notifications import notify_new_signup  # noqa: E402
 
 
 load_dotenv()
@@ -64,6 +70,17 @@ def _pro_price_ngn():
     return price
 
 
+def _account_response(email):
+    account = get_account(email)
+    if not account:
+        return None
+    return {
+        "email": account["email"],
+        "business_name": account["business_name"] or "Your Business",
+        "plan": account["plan"] if account["plan"] in {"free", "pro"} else "free",
+    }
+
+
 @app.get("/")
 def home():
     return render_template_string(PUBLIC_APP_HTML, price=_pro_price_ngn())
@@ -72,6 +89,46 @@ def home():
 @app.get("/health")
 def health():
     return jsonify({"status": "ok", "payments_enabled": _payments_enabled()})
+
+
+@app.post("/api/accounts/register")
+def register_account():
+    """Create a persistent account on the server that owns billing records."""
+    data = request.get_json(silent=True) or {}
+    try:
+        email = normalise_email(data.get("email", ""))
+        password = data.get("password", "")
+        business_name = data.get("business_name", "")
+        created = create_user(email, password, business_name)
+    except ValueError as exc:
+        return jsonify({"message": str(exc)}), 400
+
+    if not created:
+        return jsonify({"message": "An account already uses this email. Please log in instead."}), 409
+
+    notify_new_signup(email, business_name)
+    return jsonify(_account_response(email)), 201
+
+
+@app.post("/api/accounts/login")
+def login_account():
+    """Authenticate an email/password pair without exposing password hashes."""
+    data = request.get_json(silent=True) or {}
+    email = data.get("email", "")
+    password = data.get("password", "")
+    if not authenticate_user(email, password):
+        return jsonify({"message": "Incorrect email or password."}), 401
+    return jsonify(_account_response(email)), 200
+
+
+@app.post("/api/admin/reset-accounts")
+def reset_accounts():
+    """Remove all account-linked data when an administrator supplies the reset token."""
+    expected_token = os.getenv("ACCOUNT_RESET_TOKEN", "")
+    supplied_token = request.headers.get("X-BizForge-Reset-Token", "")
+    if not expected_token or not supplied_token or not hmac.compare_digest(supplied_token, expected_token):
+        return jsonify({"message": "Unauthorized"}), 401
+    return jsonify({"deleted_accounts": delete_all_account_data()}), 200
 
 
 @app.get("/api/pro-status")

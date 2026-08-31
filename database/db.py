@@ -12,7 +12,7 @@ import os
 import re
 import secrets
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 
 DEFAULT_DB = os.path.abspath(
@@ -238,6 +238,17 @@ def init_db():
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_token TEXT UNIQUE NOT NULL,
+            email TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+        """
+    )
 
     # Existing installations have older versions of these tables.
     _ensure_column(cur, "users", "password_hash", "TEXT")
@@ -252,8 +263,22 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_history_email ON history(email)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_email ON payments(email)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_app_webhook_events_type ON app_webhook_events(event_type)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(session_token)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_email ON sessions(email)")
     conn.commit()
     conn.close()
+
+
+def user_exists(email):
+    """Check if a user with the given email already exists."""
+    try:
+        email = normalise_email(email)
+    except ValueError:
+        return False
+    conn = connect()
+    row = conn.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+    conn.close()
+    return row is not None
 
 
 def create_user(email, password, business_name):
@@ -287,7 +312,11 @@ def authenticate_user(email, password):
     conn = connect()
     row = conn.execute("SELECT password_hash FROM users WHERE email=?", (email,)).fetchone()
     conn.close()
-    return bool(row and _password_matches(password, row["password_hash"]))
+    if not row:
+        return False
+    if not row["password_hash"]:
+        return False
+    return _password_matches(password, row["password_hash"])
 
 
 def ensure_billing_user(email):
@@ -318,6 +347,52 @@ def get_business_name(email):
     row = conn.execute("SELECT business_name FROM users WHERE email=?", (normalise_email(email),)).fetchone()
     conn.close()
     return row["business_name"] if row and row["business_name"] else "Your Business"
+
+
+def get_account(email):
+    """Return the non-sensitive details required after a successful sign-in."""
+    try:
+        email = normalise_email(email)
+    except ValueError:
+        return None
+    conn = connect()
+    row = conn.execute(
+        "SELECT email, plan, business_name FROM users WHERE email=?", (email,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_all_account_data():
+    """Permanently remove every account and data tied to an account email.
+
+    Webhook event receipts are deliberately retained because they contain no
+    account email and are needed to keep webhook delivery idempotent.
+    """
+    conn = connect()
+    try:
+        count = conn.execute("SELECT COUNT(*) AS count FROM users").fetchone()["count"]
+        for table in (
+            "sessions",
+            "clients",
+            "invoices",
+            "proposals",
+            "usage_tracking",
+            "emails",
+            "social_posts",
+            "business_ideas",
+            "history",
+            "payments",
+            "users",
+        ):
+            conn.execute(f"DELETE FROM {table}")
+        conn.commit()
+        return count
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def upgrade_user(email):
@@ -649,5 +724,80 @@ def record_app_webhook_event(event_id, event_type):
         )
         conn.commit()
         return result.rowcount == 1
+    finally:
+        conn.close()
+
+
+def create_session(email, days_valid=30):
+    """Create a session token for the given email that expires after specified days."""
+    try:
+        email = normalise_email(email)
+    except ValueError:
+        raise ValueError("Invalid email address")
+
+    session_token = secrets.token_urlsafe(32)
+    now = datetime.now()
+    expires_at = (now + timedelta(days=days_valid)).isoformat()
+    created_at = now.isoformat()
+
+    conn = connect()
+    try:
+        conn.execute(
+            """
+            INSERT INTO sessions (session_token, email, created_at, expires_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (session_token, email, created_at, expires_at),
+        )
+        conn.commit()
+        return session_token
+    except sqlite3.IntegrityError:
+        # Retry with a new token if collision occurs
+        return create_session(email, days_valid)
+    finally:
+        conn.close()
+
+
+def get_session_email(session_token):
+    """Get the email associated with a session token if it's still valid."""
+    if not session_token or not isinstance(session_token, str):
+        return None
+
+    conn = connect()
+    try:
+        row = conn.execute(
+            """
+            SELECT email, expires_at FROM sessions
+            WHERE session_token = ? AND expires_at > ?
+            """,
+            (session_token, datetime.now().isoformat()),
+        ).fetchone()
+        return row["email"] if row else None
+    finally:
+        conn.close()
+
+
+def delete_session(session_token):
+    """Delete a session token."""
+    if not session_token:
+        return False
+    conn = connect()
+    try:
+        conn.execute("DELETE FROM sessions WHERE session_token = ?", (session_token,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def cleanup_expired_sessions():
+    """Remove expired sessions from the database."""
+    conn = connect()
+    try:
+        conn.execute(
+            "DELETE FROM sessions WHERE expires_at <= ?",
+            (datetime.now().isoformat(),),
+        )
+        conn.commit()
     finally:
         conn.close()

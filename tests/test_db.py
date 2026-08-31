@@ -52,6 +52,17 @@ class BizForgeDatabaseTests(unittest.TestCase):
         self.assertEqual(db.complete_payment("test-payment", "12345"), "owner@example.com")
         self.assertEqual(db.get_plan("owner@example.com"), "pro")
 
+    def test_account_reset_removes_every_account_and_its_data(self):
+        db.create_user("owner@example.com", "secure-password", "Owner Co")
+        db.add_client("owner@example.com", "Acme", "hello@acme.test")
+        db.save_email("owner@example.com", "Acme", "Welcome", "Hello")
+        db.create_pending_payment("owner@example.com", "reset-payment", 5000)
+
+        self.assertEqual(db.delete_all_account_data(), 1)
+        self.assertFalse(db.user_exists("owner@example.com"))
+        self.assertEqual(db.get_clients("owner@example.com"), [])
+        self.assertIsNone(db.get_payment("reset-payment"))
+
 
 if __name__ == "__main__":
     unittest.main()

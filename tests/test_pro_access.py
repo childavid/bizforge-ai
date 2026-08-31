@@ -48,6 +48,41 @@ class ProAccessTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertIn("not enabled", response.get_json()["message"])
 
+    def test_accounts_can_be_created_then_signed_into_again(self):
+        created = self.client.post(
+            "/api/accounts/register",
+            json={
+                "email": "owner@example.com",
+                "password": "secure-password",
+                "business_name": "Owner Co",
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+
+        duplicate = self.client.post(
+            "/api/accounts/register",
+            json={
+                "email": "owner@example.com",
+                "password": "another-password",
+                "business_name": "Other Co",
+            },
+        )
+        self.assertEqual(duplicate.status_code, 409)
+
+        login = self.client.post(
+            "/api/accounts/login",
+            json={"email": "owner@example.com", "password": "secure-password"},
+        )
+        self.assertEqual(login.status_code, 200)
+        self.assertEqual(login.get_json()["email"], "owner@example.com")
+        self.assertEqual(login.get_json()["business_name"], "Owner Co")
+
+        rejected = self.client.post(
+            "/api/accounts/login",
+            json={"email": "owner@example.com", "password": "incorrect"},
+        )
+        self.assertEqual(rejected.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()

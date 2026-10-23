@@ -22,6 +22,8 @@ class ProAccessTests(unittest.TestCase):
         self.client = payment.app.test_client()
 
     def tearDown(self):
+        os.environ["PAYMENTS_ENABLED"] = "false"
+        os.environ.pop("BACKEND_URL", None)
         if TEST_DB.exists():
             TEST_DB.unlink()
 
@@ -47,6 +49,16 @@ class ProAccessTests(unittest.TestCase):
         response = self.client.post("/pay", json={"email": "buyer@example.com"})
         self.assertEqual(response.status_code, 503)
         self.assertIn("not enabled", response.get_json()["message"])
+
+    def test_checkout_requires_the_logged_in_account_even_when_enabled(self):
+        os.environ["PAYMENTS_ENABLED"] = "true"
+        os.environ["BACKEND_URL"] = "https://bizforge.example"
+        os.environ["FLW_SECRET_KEY"] = "test-secret-key"
+        os.environ["FLW_SECRET_HASH"] = "test-webhook-hash"
+
+        rejected = self.client.post("/pay", json={"email": "buyer@example.com"})
+        self.assertEqual(rejected.status_code, 401)
+        self.assertIn("log in", rejected.get_json()["message"])
 
     def test_accounts_can_be_created_then_signed_into_again(self):
         created = self.client.post(

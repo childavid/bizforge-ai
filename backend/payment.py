@@ -67,6 +67,17 @@ def _payments_enabled():
     return os.getenv("PAYMENTS_ENABLED", "false").strip().lower() == "true"
 
 
+def _payment_configuration_ready():
+    """Do not offer checkout unless its verified return path is fully configured."""
+    return all(
+        (
+            os.getenv("FLW_SECRET_KEY", "").strip(),
+            os.getenv("FLW_SECRET_HASH", "").strip(),
+            os.getenv("BACKEND_URL", "").strip(),
+        )
+    )
+
+
 def _pro_price_ngn():
     try:
         price = int(os.getenv("PRO_PRICE_NGN", "5000"))
@@ -111,7 +122,13 @@ def home():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "payments_enabled": _payments_enabled()})
+    return jsonify(
+        {
+            "status": "ok",
+            "payments_enabled": _payments_enabled(),
+            "checkout_ready": _payments_enabled() and _payment_configuration_ready(),
+        }
+    )
 
 
 @app.post("/api/accounts/register")
@@ -293,16 +310,18 @@ def create_payment():
     if not _payments_enabled():
         return jsonify({"status": "error", "message": "Payments are not enabled yet."}), 503
 
-    data = request.get_json(silent=True) or {}
+    email, error = _authentication_required()
+    if error:
+        return error
+
     try:
-        email = normalise_email(data.get("email", ""))
         amount = _pro_price_ngn()
     except ValueError as exc:
         return jsonify({"status": "error", "message": str(exc)}), 400
 
     secret_key = os.getenv("FLW_SECRET_KEY")
     backend_url = os.getenv("BACKEND_URL", "").rstrip("/")
-    if not secret_key or not backend_url:
+    if not secret_key or not os.getenv("FLW_SECRET_HASH") or not backend_url:
         logger.error("Checkout configuration is incomplete")
         return jsonify({"status": "error", "message": "Checkout is not configured."}), 503
 

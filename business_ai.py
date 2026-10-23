@@ -945,8 +945,16 @@ elif tool == "Settings":
     else:
         st.caption("The secure checkout sets and verifies the current price before access is upgraded.")
         if st.button("Create secure checkout link", use_container_width=True):
+            token = st.session_state.get("session_token", "")
+            if not token:
+                st.error("Please log out and log in again before starting checkout.")
+                st.stop()
             try:
-                response = requests.post(f"{BACKEND_URL}/pay", json={"email": email}, timeout=12)
+                response = requests.post(
+                    f"{BACKEND_URL}/pay",
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=12,
+                )
                 payload = response.json()
                 if response.ok and payload.get("status") == "success" and payload.get("link"):
                     st.session_state.pending_payment = payload.get("tx_ref")

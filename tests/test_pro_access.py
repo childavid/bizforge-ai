@@ -76,12 +76,49 @@ class ProAccessTests(unittest.TestCase):
         self.assertEqual(login.status_code, 200)
         self.assertEqual(login.get_json()["email"], "owner@example.com")
         self.assertEqual(login.get_json()["business_name"], "Owner Co")
+        self.assertTrue(login.get_json()["session_token"])
 
         rejected = self.client.post(
             "/api/accounts/login",
             json={"email": "owner@example.com", "password": "incorrect"},
         )
         self.assertEqual(rejected.status_code, 401)
+
+    def test_schedules_require_a_session_and_stay_private(self):
+        self.client.post(
+            "/api/accounts/register",
+            json={"email": "owner@example.com", "password": "secure-password", "business_name": "Owner Co"},
+        )
+        login = self.client.post(
+            "/api/accounts/login", json={"email": "owner@example.com", "password": "secure-password"}
+        )
+        headers = {"Authorization": f"Bearer {login.get_json()['session_token']}"}
+
+        rejected = self.client.get("/api/schedules")
+        self.assertEqual(rejected.status_code, 401)
+
+        created = self.client.post(
+            "/api/schedules",
+            json={
+                "title": "Call supplier",
+                "due_at": "2099-01-01T09:00:00",
+                "notes": "Confirm delivery date.",
+                "timezone": "Africa/Lagos",
+                "reminder_minutes": 15,
+            },
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 201)
+        schedule_id = created.get_json()["schedule"]["id"]
+
+        schedules = self.client.get("/api/schedules", headers=headers)
+        self.assertEqual(schedules.status_code, 200)
+        self.assertEqual(schedules.get_json()["schedules"][0]["title"], "Call supplier")
+
+        complete = self.client.post(
+            f"/api/schedules/{schedule_id}/status", json={"status": "completed"}, headers=headers
+        )
+        self.assertEqual(complete.status_code, 200)
 
 
 if __name__ == "__main__":

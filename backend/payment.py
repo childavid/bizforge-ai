@@ -18,13 +18,20 @@ from flask import Flask, jsonify, render_template_string, request
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from database.db import (  # noqa: E402
     authenticate_user,
+    cleanup_expired_sessions,
+    create_schedule,
+    create_session,
     create_user,
     create_pending_payment,
+    delete_session,
     delete_all_account_data,
     get_account,
     get_plan,
+    get_schedules,
+    get_session_email,
     init_db,
     normalise_email,
+    update_schedule_status,
 )
 from utils.ai_assist import (  # noqa: E402
     generate_business_idea_assist,
@@ -81,6 +88,22 @@ def _account_response(email):
     }
 
 
+def _authenticated_email():
+    """Return the account behind a bearer token, without trusting a client email."""
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return get_session_email(token.strip())
+
+
+def _authentication_required():
+    email = _authenticated_email()
+    if not email:
+        return None, (jsonify({"message": "Please log in again to continue."}), 401)
+    return email, None
+
+
 @app.get("/")
 def home():
     return render_template_string(PUBLIC_APP_HTML, price=_pro_price_ngn())
@@ -118,7 +141,71 @@ def login_account():
     password = data.get("password", "")
     if not authenticate_user(email, password):
         return jsonify({"message": "Incorrect email or password."}), 401
-    return jsonify(_account_response(email)), 200
+    cleanup_expired_sessions()
+    response = _account_response(email)
+    response["session_token"] = create_session(email)
+    return jsonify(response), 200
+
+
+@app.post("/api/accounts/logout")
+def logout_account():
+    """Invalidate this browser session without affecting the account itself."""
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token:
+        delete_session(token.strip())
+    return jsonify({"status": "ok"}), 200
+
+
+@app.get("/api/schedules")
+def list_schedules():
+    """List only the signed-in account's schedule, newest relevant items first."""
+    email, error = _authentication_required()
+    if error:
+        return error
+    try:
+        limit = int(request.args.get("limit", "100"))
+    except ValueError:
+        return jsonify({"message": "Invalid schedule limit."}), 400
+    return jsonify({"schedules": get_schedules(email, limit=limit)}), 200
+
+
+@app.post("/api/schedules")
+def add_schedule():
+    """Create a reminder owned by the signed-in account."""
+    email, error = _authentication_required()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    try:
+        reminder_minutes = int(data.get("reminder_minutes", 15))
+        schedule = create_schedule(
+            email,
+            data.get("title", ""),
+            data.get("due_at", ""),
+            data.get("notes", ""),
+            reminder_minutes,
+            data.get("timezone", "Africa/Lagos"),
+        )
+    except (TypeError, ValueError) as exc:
+        return jsonify({"message": str(exc)}), 400
+    return jsonify({"schedule": schedule}), 201
+
+
+@app.post("/api/schedules/<int:schedule_id>/status")
+def set_schedule_status(schedule_id):
+    """Complete or cancel a schedule only when it belongs to this account."""
+    email, error = _authentication_required()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    try:
+        changed = update_schedule_status(email, schedule_id, data.get("status", ""))
+    except ValueError as exc:
+        return jsonify({"message": str(exc)}), 400
+    if not changed:
+        return jsonify({"message": "Schedule was not found."}), 404
+    return jsonify({"status": "ok"}), 200
 
 
 @app.post("/api/admin/reset-accounts")

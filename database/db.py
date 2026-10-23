@@ -12,7 +12,8 @@ import os
 import re
 import secrets
 import sqlite3
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 DEFAULT_DB = os.path.abspath(
@@ -24,6 +25,7 @@ FREE_DAILY_LIMIT = 5
 # new accounts faster; older accounts remain compatible and protected.
 PASSWORD_ITERATIONS = 120_000
 VALID_INVOICE_STATUSES = {"draft", "sent", "paid", "overdue", "cancelled"}
+VALID_SCHEDULE_STATUSES = {"scheduled", "completed", "cancelled"}
 
 
 def connect():
@@ -249,6 +251,24 @@ def init_db():
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schedules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            title TEXT NOT NULL,
+            notes TEXT,
+            due_at TEXT NOT NULL,
+            timezone TEXT NOT NULL DEFAULT 'Africa/Lagos',
+            reminder_minutes INTEGER NOT NULL DEFAULT 15,
+            reminder_at TEXT NOT NULL,
+            reminder_sent_at TEXT,
+            status TEXT NOT NULL DEFAULT 'scheduled',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
 
     # Existing installations have older versions of these tables.
     _ensure_column(cur, "users", "password_hash", "TEXT")
@@ -265,6 +285,8 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_app_webhook_events_type ON app_webhook_events(event_type)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(session_token)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_email ON sessions(email)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_schedules_email_due ON schedules(email, status, due_at)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_schedules_reminders ON schedules(status, reminder_sent_at, reminder_at)")
     conn.commit()
     conn.close()
 
@@ -383,6 +405,7 @@ def delete_all_account_data():
             "business_ideas",
             "history",
             "payments",
+            "schedules",
             "users",
         ):
             conn.execute(f"DELETE FROM {table}")
@@ -799,5 +822,162 @@ def cleanup_expired_sessions():
             (datetime.now().isoformat(),),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def _schedule_datetime(value, timezone_name):
+    """Convert a local schedule value into an unambiguous UTC timestamp."""
+    try:
+        local_timezone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError("Choose a valid timezone") from exc
+
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("Choose a valid schedule date and time") from exc
+    if not isinstance(value, datetime):
+        raise ValueError("Choose a valid schedule date and time")
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=local_timezone)
+    return value.astimezone(timezone.utc)
+
+
+def _schedule_dict(row):
+    return dict(row) if row else None
+
+
+def create_schedule(email, title, due_at, notes="", reminder_minutes=15, timezone_name="Africa/Lagos"):
+    """Save an account-owned schedule with one future email reminder."""
+    email = normalise_email(email)
+    if not validate_text_input(title, 180):
+        raise ValueError("Enter a schedule title")
+    if not isinstance(reminder_minutes, int) or not 0 <= reminder_minutes <= 10_080:
+        raise ValueError("Choose a reminder between 0 minutes and 7 days")
+    if notes and not validate_text_input(notes, 5_000):
+        raise ValueError("Schedule notes are too long")
+
+    due_utc = _schedule_datetime(due_at, timezone_name)
+    reminder_at = due_utc - timedelta(minutes=reminder_minutes)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = connect()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO schedules (
+                email, title, notes, due_at, timezone, reminder_minutes,
+                reminder_at, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)
+            """,
+            (
+                email,
+                sanitize_input(title),
+                sanitize_input(notes),
+                due_utc.isoformat(),
+                timezone_name,
+                reminder_minutes,
+                reminder_at.isoformat(),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM schedules WHERE id=?", (cursor.lastrowid,)).fetchone()
+        return _schedule_dict(row)
+    finally:
+        conn.close()
+
+
+def get_schedules(email, limit=100):
+    """Return the nearest account schedules without loading historical rows forever."""
+    email = normalise_email(email)
+    limit = max(1, min(int(limit), 500))
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT * FROM schedules
+        WHERE email=?
+        ORDER BY CASE status WHEN 'scheduled' THEN 0 ELSE 1 END, due_at ASC
+        LIMIT ?
+        """,
+        (email, limit),
+    ).fetchall()
+    conn.close()
+    return [_schedule_dict(row) for row in rows]
+
+
+def get_due_schedules(email, now=None):
+    """Return active schedules that are due or overdue for the signed-in account."""
+    email = normalise_email(email)
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT * FROM schedules
+        WHERE email=? AND status='scheduled' AND due_at <= ?
+        ORDER BY due_at ASC
+        LIMIT 100
+        """,
+        (email, current_time.astimezone(timezone.utc).isoformat()),
+    ).fetchall()
+    conn.close()
+    return [_schedule_dict(row) for row in rows]
+
+
+def update_schedule_status(email, schedule_id, status):
+    if status not in VALID_SCHEDULE_STATUSES:
+        raise ValueError("Invalid schedule status")
+    conn = connect()
+    try:
+        result = conn.execute(
+            """
+            UPDATE schedules SET status=?, updated_at=?
+            WHERE id=? AND email=?
+            """,
+            (status, datetime.now(timezone.utc).isoformat(), int(schedule_id), normalise_email(email)),
+        )
+        conn.commit()
+        return result.rowcount == 1
+    finally:
+        conn.close()
+
+
+def get_due_schedule_reminders(now=None, limit=100):
+    """Find reminder emails ready for the background worker, across all accounts."""
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    limit = max(1, min(int(limit), 500))
+    conn = connect()
+    rows = conn.execute(
+        """
+        SELECT * FROM schedules
+        WHERE status='scheduled' AND reminder_sent_at IS NULL AND reminder_at <= ?
+        ORDER BY reminder_at ASC
+        LIMIT ?
+        """,
+        (current_time.astimezone(timezone.utc).isoformat(), limit),
+    ).fetchall()
+    conn.close()
+    return [_schedule_dict(row) for row in rows]
+
+
+def mark_schedule_reminded(schedule_id):
+    """Mark a reminder delivered once, safely ignoring duplicate workers."""
+    conn = connect()
+    try:
+        result = conn.execute(
+            """
+            UPDATE schedules SET reminder_sent_at=?, updated_at=?
+            WHERE id=? AND reminder_sent_at IS NULL
+            """,
+            (datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat(), int(schedule_id)),
+        )
+        conn.commit()
+        return result.rowcount == 1
     finally:
         conn.close()

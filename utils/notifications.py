@@ -7,6 +7,7 @@ import ssl
 import json
 from datetime import datetime, timezone
 from email.message import EmailMessage
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
 
@@ -27,23 +28,31 @@ def _settings():
     }
 
 
-def send_admin_notification(subject: str, body: str) -> bool:
-    """Email the configured owner without interrupting a sign-up or payment flow."""
+def email_notifications_configured() -> bool:
+    """Return whether the server can send transactional email without exposing secrets."""
+    try:
+        settings = _settings()
+    except ValueError:
+        return False
+    return all(settings[key] for key in ("host", "username", "password", "from_email"))
+
+
+def _send_email(recipient: str, subject: str, body: str) -> bool:
+    """Send one transactional email without allowing a mail failure to break the app."""
     try:
         settings = _settings()
     except ValueError:
         logger.error("Email notification is not configured with a valid SMTP port")
         return False
 
-    required = ("recipient", "host", "username", "password", "from_email")
-    if not all(settings[key] for key in required):
-        logger.info("Owner email notifications are not configured; event email was skipped")
+    if not recipient or not email_notifications_configured():
+        logger.info("Email notifications are not configured; event email was skipped")
         return False
 
     message = EmailMessage()
     message["Subject"] = subject
     message["From"] = settings["from_email"]
-    message["To"] = settings["recipient"]
+    message["To"] = recipient
     message.set_content(body)
 
     try:
@@ -58,9 +67,19 @@ def send_admin_notification(subject: str, body: str) -> bool:
                 server.login(settings["username"], settings["password"])
                 server.send_message(message)
     except (OSError, smtplib.SMTPException):
-        logger.exception("Could not send owner email notification")
+        logger.exception("Could not send notification email")
         return False
     return True
+
+
+def send_admin_notification(subject: str, body: str) -> bool:
+    """Email the configured owner without interrupting a sign-up or payment flow."""
+    try:
+        settings = _settings()
+    except ValueError:
+        logger.error("Email notification is not configured with a valid SMTP port")
+        return False
+    return _send_email(settings["recipient"], subject, body)
 
 
 def notify_new_signup(account_email: str, business_name: str) -> bool:
@@ -99,4 +118,21 @@ def notify_app_webhook_event(event_type: str, event_id: str, data: dict) -> bool
         f"Event ID: {event_id}\n"
         f"Received: {received_at}\n\n"
         f"Data:\n{details}\n",
+    )
+
+
+def notify_schedule_due(account_email: str, title: str, due_at: str, timezone_name: str, notes: str = "") -> bool:
+    """Send the account owner one private schedule reminder."""
+    try:
+        due = datetime.fromisoformat(due_at)
+        due_label = due.astimezone(ZoneInfo(timezone_name)).strftime("%d %b %Y, %H:%M")
+    except (ValueError, TypeError, ZoneInfoNotFoundError):
+        due_label = due_at
+    return _send_email(
+        account_email,
+        f"BizForge reminder: {title}",
+        "Your BizForge schedule reminder is ready.\n\n"
+        f"Schedule: {title}\n"
+        f"Due: {due_label} ({timezone_name})\n"
+        f"Notes: {notes or 'None'}\n",
     )

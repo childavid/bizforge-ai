@@ -2,6 +2,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import datetime, timedelta
 
 
 TEST_DB = Path(tempfile.gettempdir()) / "bizforge_db_test.sqlite3"
@@ -62,6 +63,26 @@ class BizForgeDatabaseTests(unittest.TestCase):
         self.assertFalse(db.user_exists("owner@example.com"))
         self.assertEqual(db.get_clients("owner@example.com"), [])
         self.assertIsNone(db.get_payment("reset-payment"))
+
+    def test_schedules_are_account_scoped_and_reminders_are_marked_once(self):
+        db.create_user("owner@example.com", "secure-password", "Owner Co")
+        db.create_user("other@example.com", "secure-password", "Other Co")
+        due_at = datetime.now().replace(microsecond=0) + timedelta(minutes=20)
+        schedule = db.create_schedule(
+            "owner@example.com",
+            "Follow up with Acme",
+            due_at.isoformat(),
+            "Send the proposal.",
+            reminder_minutes=15,
+        )
+
+        self.assertEqual(len(db.get_schedules("owner@example.com")), 1)
+        self.assertEqual(db.get_schedules("other@example.com"), [])
+        ready = db.get_due_schedule_reminders(now=due_at - timedelta(minutes=4))
+        self.assertEqual([item["id"] for item in ready], [schedule["id"]])
+        self.assertTrue(db.mark_schedule_reminded(schedule["id"]))
+        self.assertFalse(db.mark_schedule_reminded(schedule["id"]))
+        self.assertEqual(db.get_due_schedule_reminders(now=due_at), [])
 
 
 if __name__ == "__main__":

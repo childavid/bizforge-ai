@@ -3,7 +3,8 @@
 import csv
 import io
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 import streamlit as st
@@ -43,6 +44,14 @@ from utils.notifications import notify_new_signup
 load_dotenv()
 BACKEND_URL = os.getenv("BACKEND_URL", "").rstrip("/")
 FEATURES = ["invoice", "proposal", "email", "social_media", "business_idea"]
+REMINDER_OPTIONS = {
+    "At the due time": 0,
+    "5 minutes before": 5,
+    "15 minutes before": 15,
+    "30 minutes before": 30,
+    "1 hour before": 60,
+    "1 day before": 1_440,
+}
 
 st.set_page_config(page_title="BizForge", page_icon="📁", layout="wide")
 
@@ -236,6 +245,35 @@ def apply_futuristic_theme():
             hr {
                 border-color: rgba(148, 172, 255, 0.18) !important;
             }
+
+            @media (max-width: 768px) {
+                [data-testid="stMainBlockContainer"] {
+                    padding: 1rem 0.8rem 2rem;
+                }
+                [data-testid="stHorizontalBlock"] {
+                    gap: 0.75rem;
+                }
+                [data-testid="stMetric"] {
+                    min-height: 96px;
+                    padding: 0.8rem;
+                }
+                h1 {
+                    font-size: clamp(2rem, 10vw, 3rem) !important;
+                }
+            }
+
+            @media (max-width: 520px) {
+                [data-testid="stMainBlockContainer"] {
+                    padding: 0.8rem 0.65rem 1.5rem;
+                }
+                [data-testid="stForm"] {
+                    padding: 0.9rem 0.8rem 0.45rem;
+                }
+                .stButton > button, .stDownloadButton > button,
+                [data-testid="stFormSubmitButton"] > button {
+                    min-height: 44px;
+                }
+            }
         </style>
         """,
         unsafe_allow_html=True,
@@ -250,6 +288,8 @@ def init_state():
         "logged_in": False,
         "email": "",
         "plan": "free",
+        "business_name": "",
+        "session_token": "",
         "pending_payment": None,
     }
     for key, value in defaults.items():
@@ -270,6 +310,16 @@ def load_plan(email):
 
 
 def sign_out():
+    token = st.session_state.get("session_token", "")
+    if BACKEND_URL and token:
+        try:
+            requests.post(
+                f"{BACKEND_URL}/api/accounts/logout",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=3,
+            )
+        except requests.RequestException:
+            pass
     st.session_state.clear()
     st.rerun()
 
@@ -284,6 +334,55 @@ def _account_api(path, payload):
         return response.status_code, body if isinstance(body, dict) else {}
     except (requests.RequestException, ValueError):
         return None, None
+
+
+def _schedule_api(method, path, payload=None):
+    """Call the protected schedule service for the current signed-in account."""
+    token = st.session_state.get("session_token", "")
+    if not BACKEND_URL or not token:
+        return None, None
+    try:
+        response = requests.request(
+            method,
+            f"{BACKEND_URL}{path}",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+        body = response.json()
+        return response.status_code, body if isinstance(body, dict) else {}
+    except (requests.RequestException, ValueError):
+        return None, None
+
+
+def get_account_schedules():
+    status, body = _schedule_api("GET", "/api/schedules?limit=100")
+    if status == 200:
+        schedules = (body or {}).get("schedules", [])
+        return schedules if isinstance(schedules, list) else [], ""
+    if status == 401:
+        return [], "Your secure session has expired. Please log in again."
+    if status is None:
+        return [], "Schedules are temporarily unavailable. Please try again shortly."
+    return [], (body or {}).get("message", "Could not load schedules.")
+
+
+def _schedule_due_datetime(schedule):
+    try:
+        return datetime.fromisoformat(schedule["due_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def format_schedule_due(schedule):
+    due_at = _schedule_due_datetime(schedule)
+    if not due_at:
+        return "Unknown time"
+    try:
+        local = due_at.astimezone(ZoneInfo(schedule.get("timezone", "Africa/Lagos")))
+    except (ZoneInfoNotFoundError, ValueError):
+        local = due_at
+    return local.strftime("%d %b %Y, %H:%M")
 
 
 def log_in_account(email, password):
@@ -330,6 +429,8 @@ def account_screen():
                 st.session_state.logged_in = True
                 st.session_state.email = account.get("email", email.strip().lower())
                 st.session_state.plan = account.get("plan") or load_plan(st.session_state.email)
+                st.session_state.business_name = account.get("business_name", "Your Business")
+                st.session_state.session_token = account.get("session_token", "")
                 st.rerun()
             else:
                 st.error(message)
@@ -389,7 +490,23 @@ if not st.session_state.logged_in:
     st.stop()
 
 email = st.session_state.email
-business_name = get_business_name(email)
+business_name = st.session_state.get("business_name") or get_business_name(email)
+schedules, schedule_error = get_account_schedules()
+now_utc = datetime.now(timezone.utc)
+due_schedules = [
+    item
+    for item in schedules
+    if item.get("status") == "scheduled"
+    and _schedule_due_datetime(item)
+    and _schedule_due_datetime(item) <= now_utc
+]
+upcoming_schedules = [
+    item
+    for item in schedules
+    if item.get("status") == "scheduled"
+    and _schedule_due_datetime(item)
+    and _schedule_due_datetime(item) > now_utc
+]
 
 st.sidebar.title("BizForge")
 st.sidebar.caption(business_name)
@@ -402,6 +519,15 @@ else:
     st.sidebar.caption("Today's template uses")
     for feature in FEATURES:
         st.sidebar.write(f"{feature.replace('_', ' ').title()}: {usage.get(feature, 0)}/{FREE_DAILY_LIMIT}")
+st.sidebar.divider()
+st.sidebar.caption("Operations")
+if due_schedules:
+    st.sidebar.warning(f"{len(due_schedules)} schedule{'s' if len(due_schedules) != 1 else ''} needs attention")
+elif upcoming_schedules:
+    st.sidebar.caption(f"Next: {upcoming_schedules[0]['title']}")
+    st.sidebar.caption(format_schedule_due(upcoming_schedules[0]))
+elif not schedule_error:
+    st.sidebar.caption("No upcoming schedules")
 if st.sidebar.button("Log out", use_container_width=True):
     sign_out()
 
@@ -412,6 +538,7 @@ tool = st.sidebar.selectbox(
         "Clients",
         "Invoice Generator",
         "Invoice Register",
+        "Schedule & Reminders",
         "Proposal Generator",
         "Email Writer",
         "Social Media Posts",
@@ -437,6 +564,28 @@ if tool == "Dashboard":
     col2.metric("Invoices", len(invoices))
     col3.metric("Outstanding", format_currency(open_total))
     col4.metric("Recorded paid", format_currency(paid_total))
+    st.divider()
+    st.subheader("Next actions")
+    if due_schedules:
+        st.warning(f"{len(due_schedules)} schedule{'s are' if len(due_schedules) != 1 else ' is'} due now. Open Schedule & Reminders to complete or reschedule it.")
+    if upcoming_schedules:
+        st.dataframe(
+            [
+                {
+                    "Schedule": item["title"],
+                    "Due": format_schedule_due(item),
+                    "Reminder": next(
+                        (label for label, minutes in REMINDER_OPTIONS.items() if minutes == item.get("reminder_minutes")),
+                        "Custom reminder",
+                    ),
+                }
+                for item in upcoming_schedules[:5]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+    elif not due_schedules:
+        st.info("No next actions yet. Add one in Schedule & Reminders to keep the team on track.")
     st.divider()
     st.subheader("Recent invoices")
     if invoices:
@@ -567,6 +716,74 @@ elif tool == "Invoice Register":
         st.divider()
         st.text_area("Invoice content", selected["content"], height=260)
         export_section(selected["content"], "Invoice", selected["invoice_number"] or f"invoice_{selected['id']}")
+
+
+elif tool == "Schedule & Reminders":
+    st.title("Schedule & Reminders")
+    st.caption("Keep deadlines, follow-ups, and important business moments in one operating view.")
+    if schedule_error:
+        st.error(schedule_error)
+    elif not BACKEND_URL:
+        st.info("Schedules are available after the app is connected to its secure backend.")
+    else:
+        with st.form("schedule_form", clear_on_submit=True):
+            title = st.text_input("What needs to happen?")
+            schedule_date = st.date_input("Date", value=date.today(), key="schedule_date")
+            schedule_time = st.time_input("Time", value=datetime.now().replace(second=0, microsecond=0).time(), key="schedule_time")
+            reminder_label = st.selectbox("Email reminder", list(REMINDER_OPTIONS), index=2)
+            notes = st.text_area("Notes (optional)", height=100)
+            submitted = st.form_submit_button("Add to schedule", use_container_width=True)
+        if submitted:
+            due_at = datetime.combine(schedule_date, schedule_time).isoformat()
+            status, body = _schedule_api(
+                "POST",
+                "/api/schedules",
+                {
+                    "title": title,
+                    "due_at": due_at,
+                    "notes": notes,
+                    "timezone": "Africa/Lagos",
+                    "reminder_minutes": REMINDER_OPTIONS[reminder_label],
+                },
+            )
+            if status == 201:
+                st.success("Schedule saved. BizForge will show it here and send its reminder when email notifications are configured.")
+                st.rerun()
+            elif status == 401:
+                st.error("Your session has expired. Please log in again.")
+            else:
+                st.error((body or {}).get("message", "Could not save this schedule. Please try again."))
+
+        st.subheader("Your schedule")
+        if not schedules:
+            st.info("No schedules yet. Add your next deadline, customer follow-up, or team task above.")
+        else:
+            for item in schedules:
+                status_label = item.get("status", "scheduled").title()
+                with st.expander(f"{item['title']} — {format_schedule_due(item)} — {status_label}", expanded=item in due_schedules):
+                    st.write(f"**Due:** {format_schedule_due(item)} ({item.get('timezone', 'Africa/Lagos')})")
+                    if item.get("notes"):
+                        st.write(item["notes"])
+                    if item.get("status") == "scheduled":
+                        left, right = st.columns(2)
+                        if left.button("Mark complete", key=f"complete_schedule_{item['id']}", use_container_width=True):
+                            status, body = _schedule_api(
+                                "POST", f"/api/schedules/{item['id']}/status", {"status": "completed"}
+                            )
+                            if status == 200:
+                                st.success("Schedule marked complete.")
+                                st.rerun()
+                            else:
+                                st.error((body or {}).get("message", "Could not update this schedule."))
+                        if right.button("Cancel", key=f"cancel_schedule_{item['id']}", use_container_width=True):
+                            status, body = _schedule_api(
+                                "POST", f"/api/schedules/{item['id']}/status", {"status": "cancelled"}
+                            )
+                            if status == 200:
+                                st.success("Schedule cancelled.")
+                                st.rerun()
+                            else:
+                                st.error((body or {}).get("message", "Could not update this schedule."))
 
 
 elif tool == "Proposal Generator":
